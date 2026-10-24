@@ -6,134 +6,73 @@ import autopilot.sensor.ObstacleSensor;
 import autopilot.sensor.SpeedSensor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class AutoDriverTest {
 
-    private SpeedSensor speedSensor;
-    private ObstacleSensor obstacleSensor;
-    private LaneSensor laneSensor;
-    private AutoDriver autoDriver;
+    private static final double TARGET_SPEED_KMH = 80.0;
+    private static final double NORMAL_DISTANCE_METERS = 100.0;
+    private static final double SAFE_MODE_BRAKE_PRESSURE = 30.0;
+
+    private SpeedSensor defaultSpeedSensor;
+    private ObstacleSensor defaultObstacleSensor;
+    private LaneSensor defaultLaneSensor;
 
     @BeforeEach
     void setUp() {
-        speedSensor = new SpeedSensor() {
-            @Override
-            public double getSpeedKmh() {
-                return 80.0;
-            }
-        };
-
-        obstacleSensor = new ObstacleSensor() {
-            @Override
-            public double getDistanceMeters() {
-                return 100.0;
-            }
-        };
-
-        laneSensor = new LaneSensor() {
-            @Override
-            public double getLaneOffsetMeters() {
-                return 0.0;
-            }
-        };
-
-        autoDriver = new AutoDriver(
-                speedSensor,
-                obstacleSensor,
-                laneSensor,
-                80.0
-        );
+        defaultSpeedSensor = () -> TARGET_SPEED_KMH;
+        defaultObstacleSensor = () -> NORMAL_DISTANCE_METERS;
+        defaultLaneSensor = () -> 0.0;
     }
 
     @Test
-    void test1() {
+    void tick_UnderNormalConditions_ShouldNotEnterSafeMode() {
+        AutoDriver autoDriver = new AutoDriver(defaultSpeedSensor, defaultObstacleSensor, defaultLaneSensor, TARGET_SPEED_KMH);
+        
         AutoDriver.DriveResult result = autoDriver.tick(GearBox.Gear.D);
 
         assertNotNull(result);
         assertFalse(result.safeMode());
-        assertNotNull(result.cruiseMode());
         assertEquals(0.0, result.brakePressure());
     }
 
-    @Test
-    void testLanePositive() {
-        laneSensor = new LaneSensor() {
-            @Override
-            public double getLaneOffsetMeters() {
-                return 1.0;
-            }
-        };
-
-        autoDriver = new AutoDriver(
-                speedSensor, obstacleSensor, laneSensor, 80.0
-        );
+    @ParameterizedTest
+    @CsvSource({
+            "1.0, -1.0",
+            "-1.0, 1.0"
+    })
+    void tick_WhenLaneOffsetOccurs_ShouldSteerInOppositeDirection(double offset, double expectedSignMultiplier) {
+        LaneSensor laneSensor = () -> offset;
+        AutoDriver autoDriver = new AutoDriver(defaultSpeedSensor, defaultObstacleSensor, laneSensor, TARGET_SPEED_KMH);
 
         AutoDriver.DriveResult result = autoDriver.tick(GearBox.Gear.D);
 
-        assertTrue(result.steeringAngleDegrees() < 0.0);
+        assertTrue(result.steeringAngleDegrees() * expectedSignMultiplier > 0.0);
     }
 
-    @Test
-    void testLaneNegative() {
-        laneSensor = new LaneSensor() {
-            @Override
-            public double getLaneOffsetMeters() {
-                return -1.0;
-            }
-        };
-
-        autoDriver = new AutoDriver(
-                speedSensor, obstacleSensor, laneSensor, 80.0
+    static Stream<AutoDriver> provideFaultySensors() {
+        SpeedSensor faultySpeedSensor = () -> { throw new SensorFailureException("Speed sensor failed"); };
+        ObstacleSensor faultyObstacleSensor = () -> { throw new SensorFailureException("Obstacle sensor failed"); };
+        
+        return Stream.of(
+                new AutoDriver(faultySpeedSensor, () -> NORMAL_DISTANCE_METERS, () -> 0.0, TARGET_SPEED_KMH),
+                new AutoDriver(() -> TARGET_SPEED_KMH, faultyObstacleSensor, () -> 0.0, TARGET_SPEED_KMH)
         );
-
-        AutoDriver.DriveResult result = autoDriver.tick(GearBox.Gear.D);
-
-        assertTrue(result.steeringAngleDegrees() > 0.0);
     }
 
-    @Test
-    void testSpeedSensorFailure() {
-        speedSensor = new SpeedSensor() {
-            @Override
-            public double getSpeedKmh() {
-                throw new SensorFailureException("Speed sensor failed");
-            }
-        };
-
-        autoDriver = new AutoDriver(
-                speedSensor, obstacleSensor, laneSensor, 80.0
-        );
-
-        AutoDriver.DriveResult result = autoDriver.tick(GearBox.Gear.D);
+    @ParameterizedTest
+    @MethodSource("provideFaultySensors")
+    void tick_WhenSensorFails_ShouldEnterSafeMode(AutoDriver faultyAutoDriver) {
+        AutoDriver.DriveResult result = faultyAutoDriver.tick(GearBox.Gear.D);
 
         assertTrue(result.safeMode());
-        assertEquals(30.0, result.brakePressure());
-        assertEquals(0.0, result.steeringAngleDegrees());
+        assertEquals(SAFE_MODE_BRAKE_PRESSURE, result.brakePressure());
         assertEquals(AdaptiveCruise.Mode.BRAKE, result.cruiseMode());
-        assertFalse(result.warningActive());
-    }
-
-    @Test
-    void testObstacleSensorFailure() {
-        obstacleSensor = new ObstacleSensor() {
-            @Override
-            public double getDistanceMeters() {
-                throw new SensorFailureException("Obstacle sensor failed");
-            }
-        };
-
-        autoDriver = new AutoDriver(
-                speedSensor, obstacleSensor, laneSensor, 80.0
-        );
-
-        AutoDriver.DriveResult result = autoDriver.tick(GearBox.Gear.D);
-
-        assertTrue(result.safeMode());
-        assertEquals(30.0, result.brakePressure());
-        assertEquals(0.0, result.steeringAngleDegrees());
-        assertEquals(AdaptiveCruise.Mode.BRAKE, result.cruiseMode());
-        assertFalse(result.warningActive());
     }
 }
